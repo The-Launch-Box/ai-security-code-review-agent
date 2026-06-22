@@ -77,21 +77,33 @@ if scan_type == "Local Directory":
         elif not os.path.exists(local_path):
             st.error("The specified path does not exist.")
         else:
-            with st.spinner(f"Agents are currently reviewing {local_path}..."):
-                try:
-                    app = build_graph()
-                    state = {
-                        "is_github": False,
-                        "repo_path": local_path,
-                        "pr_number": None,
-                    }
-                    final_state = app.invoke(state)
-                    
-                    st.success("Review Complete!")
-                    st.markdown("### Findings Report")
-                    st.markdown(final_state.get("final_report", "No report generated."))
-                except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+            try:
+                app = build_graph()
+                state = {
+                    "is_github": False,
+                    "repo_path": local_path,
+                    "pr_number": None,
+                }
+                
+                final_state = dict(state)
+                status_container = st.status(f"Agents are currently reviewing {local_path}...", expanded=True)
+                
+                for output in app.stream(state):
+                    for node_name, node_state in output.items():
+                        status_container.write(f"✅ **Step completed:** `{node_name}`")
+                        final_state.update(node_state)
+                        
+                        if "raw_findings" in node_state and node_name == "detect_vulnerabilities":
+                            with status_container.expander("🕵️ Raw Agent Findings"):
+                                st.write(node_state["raw_findings"])
+                                
+                status_container.update(label="Workflow Complete!", state="complete", expanded=False)
+                
+                st.success("Review Complete!")
+                st.markdown("### Findings Report")
+                st.markdown(final_state.get("final_report", "No report generated."))
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
 
 else:
     col1, col2 = st.columns(2)
@@ -108,18 +120,31 @@ else:
         if not github_repo:
             st.error("Please provide a repository name.")
         else:
-            with st.spinner(f"Agents are fetching and reviewing PR #{pr_number} from {github_repo}..."):
-                try:
-                    app = build_graph()
-                    state = {
-                        "is_github": True,
-                        "repo_path": github_repo,
-                        "pr_number": int(pr_number),
-                    }
-                    final_state = app.invoke(state)
-                    
-                    st.success("Review Complete!")
-                    st.markdown("### Findings Report")
-                    st.markdown(final_state.get("final_report", "No report generated."))
-                except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+            try:
+                app = build_graph()
+                state = {
+                    "is_github": True,
+                    "repo_path": github_repo,
+                    "pr_number": int(pr_number),
+                }
+                
+                final_state = dict(state)
+                status_container = st.status(f"Agents are fetching and reviewing PR #{pr_number} from {github_repo}...", expanded=True)
+                
+                for output in app.stream(state):
+                    for node_name, node_state in output.items():
+                        status_container.write(f"✅ **Step completed:** `{node_name}`")
+                        final_state.update(node_state)
+                        
+                        if "raw_findings" in node_state and node_name == "detect_vulnerabilities":
+                            with status_container.expander("🕵️ Raw Agent Findings"):
+                                st.write(node_state["raw_findings"])
+                                
+                status_container.update(label="Workflow Complete!", state="complete", expanded=False)
+                
+                st.success("Review Complete!")
+                st.markdown("### Findings Report")
+                st.markdown(final_state.get("final_report", "No report generated."))
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+
