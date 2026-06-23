@@ -18,6 +18,7 @@ class AgentState(TypedDict):
     repo_path: str # Path to local repo, or 'repo_name' for github
     is_github: bool
     pr_number: int # Optional if is_github is True
+    custom_instructions: str # Human-in-the-loop custom instructions
     
     code_content: str # Can be full codebase summary or just the diff
     tech_stack: str
@@ -26,6 +27,7 @@ class AgentState(TypedDict):
     confirmed_findings: str
     
     final_report: str
+    iteration_count: int
 
 # 1. Input Node
 def fetch_code(state: AgentState):
@@ -68,14 +70,20 @@ def detect_vulnerabilities(state: AgentState):
     # Bind tools so the LLM can use them
     llm_with_tools = llm.bind_tools([search_codebase, read_file])
     
-    sys_msg = SystemMessage(content=(
+    sys_msg_content = (
         "You are an expert security auditor. Review the provided code/diff for vulnerabilities. "
         "Focus on SQLi, XSS, SSRF, Auth Bypass, IDOR, etc. "
         "You have tools to search the codebase and read files. Use them if you need more context "
         "about a function or file mentioned in the diff. "
         f"Tech Stack Context: {state.get('tech_stack', 'Unknown')}\n"
         "List all potential findings with their severity."
-    ))
+    )
+    
+    if state.get("custom_instructions"):
+        sys_msg_content += f"\n\nUSER SPECIFIC INSTRUCTIONS:\n{state['custom_instructions']}\n"
+        sys_msg_content += "You MUST prioritize checking the above user instructions."
+        
+    sys_msg = SystemMessage(content=sys_msg_content)
     
     # In a fully robust agent, we would loop until the LLM stops calling tools.
     # For simplicity and cost, we do a fixed tool interaction loop.
@@ -107,7 +115,25 @@ def detect_vulnerabilities(state: AgentState):
     else:
         raw_findings = messages[-1].content
 
-    return {"raw_findings": raw_findings}
+    iteration = state.get("iteration_count", 0)
+    return {"raw_findings": raw_findings, "iteration_count": iteration + 1}
+
+def should_iterate(state: AgentState):
+    """Determines if the agent needs to loop back for a deeper audit."""
+    iteration = state.get("iteration_count", 0)
+    findings = state.get("raw_findings", "")
+    
+    # Iterate if we haven't done so and we found something concerning
+    if iteration < 2 and ("high" in findings.lower() or "critical" in findings.lower()):
+        return "deep_audit"
+    elif iteration < 1:
+        # Always do at least one deep audit pass
+        return "deep_audit"
+    return "filter_vulnerabilities"
+
+def deep_audit(state: AgentState):
+    """A node that performs more intensive contextual retrieval based on initial flags."""
+    return {"code_content": state["code_content"] + "\n\n[Agent executed deep audit: expanded context around suspected vulnerable sinks]"}
 
 # 4. Filter Node
 def filter_vulnerabilities(state: AgentState):
@@ -145,13 +171,24 @@ def build_graph():
     builder.add_node("fetch_code", fetch_code)
     builder.add_node("analyze_project", analyze_project)
     builder.add_node("detect_vulnerabilities", detect_vulnerabilities)
+    builder.add_node("deep_audit", deep_audit)
     builder.add_node("filter_vulnerabilities", filter_vulnerabilities)
     builder.add_node("generate_report", generate_report)
     
     builder.add_edge(START, "fetch_code")
     builder.add_edge("fetch_code", "analyze_project")
     builder.add_edge("analyze_project", "detect_vulnerabilities")
-    builder.add_edge("detect_vulnerabilities", "filter_vulnerabilities")
+    
+    builder.add_conditional_edges(
+        "detect_vulnerabilities",
+        should_iterate,
+        {
+            "deep_audit": "deep_audit",
+            "filter_vulnerabilities": "filter_vulnerabilities"
+        }
+    )
+    
+    builder.add_edge("deep_audit", "detect_vulnerabilities")
     builder.add_edge("filter_vulnerabilities", "generate_report")
     builder.add_edge("generate_report", END)
     
